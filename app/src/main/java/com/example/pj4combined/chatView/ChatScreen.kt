@@ -38,7 +38,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.pj4combined.R
-
 @Composable
 internal fun ChatRoute(
     chatViewModel: ChatViewModel = viewModel(

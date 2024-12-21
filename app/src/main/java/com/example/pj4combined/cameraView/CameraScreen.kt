@@ -16,8 +16,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -71,6 +74,8 @@ fun CameraScreen() {
 
     val previewView = remember { PreviewView(context) }
 
+    var currentClassifier by remember { mutableStateOf<PersonClassifier?>(null) }
+
     LaunchedEffect(Unit) {
 
         val personClassifierGPU = PersonClassifier()
@@ -78,6 +83,8 @@ fun CameraScreen() {
             personClassifierGPU.initialize(context, useGPU = true)
         }
         personClassifierGPU.setDetectorListener(listener)
+
+        currentClassifier = personClassifierGPU
 
         preview.surfaceProvider = previewView.surfaceProvider
 
@@ -101,20 +108,75 @@ fun CameraScreen() {
         Log.d("CS330", "Camera bound")
     }
 
+    // Helper Functions
+    suspend fun switchToCPUClassifier(
+        context: Context,
+        imageAnalyzer: ImageAnalysis,
+        cameraExecutor: java.util.concurrent.ExecutorService,
+        listener: DetectorListener
+    ) {
+        val personClassifierCPU = PersonClassifier()
+        withContext(Dispatchers.IO) {
+            personClassifierCPU.initialize(context, useGPU = false, threadNumber = 2)
+        }
+        personClassifierCPU.setDetectorListener(listener)
+
+        imageAnalyzer.clearAnalyzer()
+        imageAnalyzer.setAnalyzer(cameraExecutor) { image ->
+            detectObjects(image, personClassifierCPU)
+            image.close()
+        }
+        Log.d("CS330", "Switched to CPU for Object Detection")
+    }
+
+    suspend fun switchToGPUClassifier(
+        context: Context,
+        imageAnalyzer: ImageAnalysis,
+        cameraExecutor: java.util.concurrent.ExecutorService,
+        listener: DetectorListener
+    ) {
+        val personClassifierGPU = PersonClassifier()
+        withContext(Dispatchers.IO) {
+            personClassifierGPU.initialize(context, useGPU = true)
+        }
+        personClassifierGPU.setDetectorListener(listener)
+
+        imageAnalyzer.clearAnalyzer()
+        imageAnalyzer.setAnalyzer(cameraExecutor) { image ->
+            detectObjects(image, personClassifierGPU)
+            image.close()
+        }
+        Log.d("CS330", "Switched to GPU for Object Detection")
+    }
+
+
+    val currentMode = remember { mutableStateOf("GPU") } // "GPU" 또는 "CPU" 상태 추적
+    val stableInferenceCount = remember { mutableIntStateOf(0) } // CPU에서의 안정적 성능 카운트
+
     if (detectionResults.value != null) {
-        // TODO:
-        //  Choose your inference time threshold
-        val inferenceTimeThreshold = 200000
+        val inferenceTimeThreshold = 150
+        val stableInferenceLimit = 100 // Number of stable cycles to switch back to GPU
 
-        if (detectionResults.value!!.inferenceTime > inferenceTimeThreshold) {
-            Log.d("CS330", "GPU too slow, switching to CPU start")
-            // TODO:
-            //  Create new classifier to be run on CPU with 2 threads
-
-            // TODO:
-            //  Set imageAnalyzer to use the new classifier
-
-            Log.d("CS330", "GPU too slow, switching to CPU done")
+        if (currentMode.value == "GPU" && detectionResults.value!!.inferenceTime > inferenceTimeThreshold) {
+            // Switch to CPU
+            LaunchedEffect(Unit) {
+                switchToCPUClassifier(context, imageAnalyzer, cameraExecutor, listener)
+                currentMode.value = "CPU"
+                stableInferenceCount.intValue = 0
+            }
+        } else if (currentMode.value == "CPU") {
+            if (detectionResults.value!!.inferenceTime <= inferenceTimeThreshold) {
+                stableInferenceCount.intValue += 1
+            } else {
+                stableInferenceCount.intValue = 0
+            }
+            if (stableInferenceCount.intValue >= stableInferenceLimit) {
+                // Switch back to GPU
+                LaunchedEffect(Unit) {
+                    switchToGPUClassifier(context, imageAnalyzer, cameraExecutor, listener)
+                    currentMode.value = "GPU"
+                }
+            }
         }
     }
 
